@@ -1,0 +1,34 @@
+# One command brings up SQL Server, generates the synthetic data and builds the model:
+#   docker compose up
+# Then connect Power BI Desktop to localhost,1433 (database TransportAnalytics).
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64            # on Apple Silicon this runs under emulation
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in .env}
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+
+  pipeline:
+    image: python:3.12-slim
+    depends_on:
+      - sqlserver
+    working_dir: /app
+    volumes:
+      - ./:/app
+    environment:
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      DB_HOST: sqlserver
+      DB_NAME: ${DB_NAME:-TransportAnalytics}
+    command: >
+      sh -c "pip install --quiet --no-cache-dir -r requirements.txt
+      && python generator/generate_data.py
+      && python loader/load.py"
+
+volumes:
+  mssql-data:

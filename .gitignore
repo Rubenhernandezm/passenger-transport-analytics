@@ -1,0 +1,14 @@
+# local secrets
+.env
+
+# generated data (reproducible with generator/generate_data.py)
+data/*
+!data/.gitkeep
+
+# Power BI: commit only reports built on the synthetic data
+*.pbix.bak
+
+# Python
+__pycache__/
+*.pyc
+.venv/

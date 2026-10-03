@@ -1,0 +1,137 @@
+// ============================================================================
+// DAX measures for the Power BI report
+//
+// Setup in Power BI Desktop:
+//   1. Get data > SQL Server > server "localhost,1433", database "TransportAnalytics",
+//      Import mode, and select the seven dw views.
+//   2. Rename the tables without the schema prefix (fact_sales, dim_calendar, ...).
+//   3. Mark dim_calendar as the date table (column [date]).
+//   4. Relationships (many-to-one, single direction):
+//        fact_sales[service_date]           -> dim_calendar[date]
+//        fact_sales[customer_id]            -> dim_customer[customer_id]
+//        fact_sales[product_id]             -> dim_product[product_id]
+//        fact_fleet_expense[operation_date] -> dim_calendar[date]
+//        fact_fleet_expense[vehicle_id]     -> dim_vehicle[vehicle_id]
+//        fact_telematics[month_start]       -> dim_calendar[date]
+//        fact_telematics[vehicle_id]        -> dim_vehicle[vehicle_id]
+//   5. Create a table "_Measures" and paste the measures below.
+//
+// Convention: the SQL views keep doubtful rows and flag them; the measures
+// decide what enters a KPI. Flagged rows stay available for the data quality page.
+// ============================================================================
+
+
+// ---------------------------------------------------------------- Sales ----
+
+Total Sales =
+CALCULATE (
+    SUM ( fact_sales[amount] ),
+    fact_sales[is_future_date] = 0
+)
+
+Sales PY =
+CALCULATE ( [Total Sales], SAMEPERIODLASTYEAR ( dim_calendar[date] ) )
+
+Sales YoY % =
+DIVIDE ( [Total Sales] - [Sales PY], [Sales PY] )
+
+// administrative lines (amount 0) are paperwork, not services
+Services =
+CALCULATE (
+    COUNTROWS ( fact_sales ),
+    fact_sales[is_administrative_line] = 0,
+    fact_sales[is_future_date] = 0
+)
+
+Average Ticket =
+DIVIDE ( [Total Sales], [Services] )
+
+Active Customers =
+CALCULATE (
+    DISTINCTCOUNT ( fact_sales[customer_id] ),
+    fact_sales[is_administrative_line] = 0,
+    fact_sales[is_future_date] = 0
+)
+
+Regular Lines Share % =
+DIVIDE (
+    CALCULATE ( [Total Sales], fact_sales[is_regular_line] = 1 ),
+    [Total Sales]
+)
+
+
+// ---------------------------------------------------------------- Fleet ----
+
+// refunds keep their negative sign, so this is already the net expense
+Fleet Expense =
+SUM ( fact_fleet_expense[amount] )
+
+Fuel Expense =
+CALCULATE ( [Fleet Expense], fact_fleet_expense[expense_type] = "Fuel" )
+
+Fuel Litres =
+CALCULATE ( SUM ( fact_fleet_expense[litres] ), fact_fleet_expense[expense_type] = "Fuel" )
+
+Avg Price per Litre =
+DIVIDE ( [Fuel Expense], [Fuel Litres] )
+
+Km Driven =
+SUM ( fact_telematics[monthly_km] )
+
+// Telematics starts in 2025 and does not cover every vehicle, so the fuel side
+// is restricted to the vehicles that report kilometres in the current context.
+Fuel Cost per Km =
+VAR TrackedVehicles = VALUES ( fact_telematics[vehicle_id] )
+VAR FuelTracked =
+    CALCULATE ( [Fuel Expense], TREATAS ( TrackedVehicles, fact_fleet_expense[vehicle_id] ) )
+RETURN
+    DIVIDE ( FuelTracked, [Km Driven] )
+
+
+// --------------------------------------------------------- Data quality ----
+
+Sales Incidents =
+CALCULATE ( COUNTROWS ( fact_sales ), fact_sales[is_future_date] = 1 )
+
+Fleet Expense Incidents =
+COUNTROWS (
+    FILTER (
+        fact_fleet_expense,
+        fact_fleet_expense[is_unknown_vehicle] = 1
+            || fact_fleet_expense[is_outside_fleet_period] = 1
+            || fact_fleet_expense[is_odometer_suspect] = 1
+            || fact_fleet_expense[is_refund] = 1
+    )
+)
+
+Telematics Incidents =
+COUNTROWS (
+    FILTER (
+        fact_telematics,
+        fact_telematics[is_speed_outlier] = 1
+            || fact_telematics[is_cumulative_km_drop] = 1
+            || fact_telematics[is_unmatched_device] = 1
+    )
+)
+
+Data Quality Incidents =
+[Sales Incidents] + [Fleet Expense Incidents] + [Telematics Incidents]
+
+
+Fleet Row Has Incident =
+MAXX (
+    fact_fleet_expense,
+    MAX (
+        MAX ( fact_fleet_expense[is_unknown_vehicle], fact_fleet_expense[is_outside_fleet_period] ),
+        MAX ( fact_fleet_expense[is_odometer_suspect], fact_fleet_expense[is_refund] )
+    )
+)
+
+Telematics Row Has Incident =
+MAXX (
+    fact_telematics,
+    MAX (
+        MAX ( fact_telematics[is_speed_outlier], fact_telematics[is_cumulative_km_drop] ),
+        fact_telematics[is_unmatched_device]
+    )
+)
